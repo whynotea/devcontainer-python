@@ -1,0 +1,70 @@
+FROM continuumio/anaconda3:2023.03-1 as upstream
+
+FROM ghcr.io/whynotea/devcontainer-base:v1.0.4
+COPY --from=upstream /opt /opt/
+USER root
+
+# Copy scripts to execute
+COPY add-notice.sh /tmp/library-scripts/
+
+ENV PATH=/opt/conda/bin:$PATH
+ARG USERNAME=code
+
+RUN dnf  -y --setopt=tsflags=nodocs install \
+  bzip2 \
+  ca-certificates \
+  glib2 \
+  wget \
+  mesa-libGL mesa-libGL-devel mesa-dri-drivers \
+  mtdev \
+  && bash /tmp/library-scripts/add-notice.sh \
+  && ln -s /opt/conda/etc/profile.d/conda.sh /etc/profile.d/conda.sh \
+  && echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.zshrc \
+  && echo "conda activate base" >> ~/.zshrc \
+  && dnf clean all && rm -rf /var/cache/yuminstall /tmp/library-scripts/add-notice.sh
+
+# Temporary: Upgrade python packages due to mentioned CVEs
+# They are installed by the base image (continuumio/anaconda3) which does not have the patch.
+RUN python3 -m pip install \
+  # https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2022-21797
+  --upgrade joblib \
+  # https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2022-24065
+  cookiecutter \
+  # https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2022-34749
+  mistune \
+  # https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-34141
+  numpy \
+  # https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2023-25577
+  werkzeug \
+  # https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-32862
+  nbconvert \
+  # https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2023-28370
+  tornado
+
+# Copy environment.yml (if found) to a temp location so we can update the environment. Also
+# copy "noop.txt" so the COPY instruction does not fail if no environment.yml exists.
+# COPY environment.yml* .devcontainer/noop.txt /tmp/conda-tmp/
+COPY environment.yml* noop.txt /tmp/conda-tmp/
+RUN if [ -f "/tmp/conda-tmp/environment.yml" ]; then umask 0002 && /opt/conda/bin/conda env update -n base -f /tmp/conda-tmp/environment.yml; fi \
+  && rm -rf /tmp/conda-tmp
+
+# Temporary: Upgrade python packages due to mentioned CVEs
+# They are installed by the base image (continuumio/anaconda3) which does not have the patch.
+RUN conda install \ 
+  # https://github.com/advisories/GHSA-5cpq-8wj7-hf2v
+  pyopenssl=23.2.0 \ 
+  cryptography=41.0.2 \
+  # https://github.com/advisories/GHSA-j8r2-6x86-q33q
+  requests=2.31.0
+
+# Create conda group, update conda directory permissions, 
+# add user to conda group
+# Note: We need to execute these commands after pip install / conda update 
+# since pip doesn't preserve directory permissions
+RUN groupadd -r conda --gid 900 \
+  && chown -R :conda /opt/conda \
+  && chmod -R g+w /opt/conda \
+  && find /opt -type d | xargs -n 1 chmod g+s \
+  && usermod -aG conda ${USERNAME}
+
+USER code
